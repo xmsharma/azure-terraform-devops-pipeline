@@ -1,0 +1,95 @@
+
+trigger:
+- master
+
+pool:
+  vmImage: ubuntu-latest
+# variables:
+variables:
+ - name: DEV_ENVIRONMENT
+   value: dev
+ - name: QA_ENVIRONMENT
+   value: qa
+
+stages:
+  - stage: TerraformValidate
+    displayName: Validate Terraform Prerequisites 
+    jobs:
+      - job: TerraformValidateJob
+        continueOnError: false
+        steps:          
+        - task: PublishPipelineArtifact@1
+          displayName: Publish pipeline artifacts
+          inputs:
+            targetPath: '$(System.DefaultWorkingDirectory)/terraform-manifests'
+            artifact: 'terraform-manifests-out'
+            publishLocation: 'pipeline'
+        - task: TerraformInstaller@0
+          displayName: Terraform install
+          inputs:
+            terraformVersion: 'latest'        
+        - task: TerraformCLI@0
+          displayName: Terraform init
+          inputs:
+            command: 'init'
+            workingDirectory: '$(System.DefaultWorkingDirectory)/terraform-manifests'
+            backendType: 'azurerm'
+            backendServiceArm: 'terraform-aks-azurerm-svc-con'
+            ensureBackend: true
+            backendAzureRmResourceGroupName: 'terraform-storage-rg'
+            backendAzureRmResourceGroupLocation: 'eastus'
+            backendAzureRmStorageAccountName: 'terraformstatexlrwdrzs1'
+            backendAzureRmContainerName: 'tfstatefiles'
+            backendAzureRmKey: 'aks-base.tfstate'
+            allowTelemetryCollection: false
+        - task: TerraformCLI@0
+          displayName: Terraform validate
+          inputs:
+            command: 'validate'
+            allowTelemetryCollection: false
+  - stage: DeployAKSClusters
+    displayName: Deployment of Kubernetes cluster
+    jobs:
+      - deployment: DeployDevAKSCluster
+        displayName: Deploy AKS cluster
+        pool:
+           vmImage: 'ubuntu-latest'
+        # collection of resources targetted by a deployment for audit history
+        environment: $(DEV_ENVIRONMENT) 
+        strategy:
+          runOnce:
+            deploy:
+              steps:                
+                  - task: DownloadSecureFile@1
+                    name: sshkey
+                    inputs:
+                      secureFile: 'aks-terraform-devops-ssh-key-ububtu.pub'
+                  - task: TerraformCLI@0
+                    displayName: Terraform Init
+                    inputs:
+                      command: 'init'
+                      workingDirectory: '$(Pipeline.Workspace)/terraform-manifests-out'
+                      backendType: 'azurerm'
+                      backendServiceArm: 'terraform-aks-azurerm-svc-con'
+                      backendAzureRmResourceGroupName: 'terraform-storage-rg'
+                      backendAzureRmResourceGroupLocation: 'eastus'
+                      backendAzureRmStorageAccountName: 'terraformstatexlrwdrzs1'
+                      backendAzureRmContainerName: 'tfstatefiles'
+                      backendAzureRmKey: 'aks-$(DEV_ENVIRONMENT).tfstate'
+                      allowTelemetryCollection: false
+                  - task: TerraformCLI@0
+                    displayName: Terraform plan
+                    inputs:
+                      command: 'plan'
+                      workingDirectory: '$(Pipeline.Workspace)/terraform-manifests-out'
+                      environmentServiceName: 'terraform-aks-azurerm-svc-con'
+                      commandOptions: '-var ssh_public_key=$(sshkey.secureFilePath)  -out $(Pipeline.Workspace)/terraform-manifests-out/$(DEV_ENVIRONMENT)-$(Build.BuildId).out   -var environment=$(DEV_ENVIRONMENT)'
+                      allowTelemetryCollection: false
+                  - task: TerraformCLI@0
+                    displayName: Terraform apply 
+                    inputs:
+                      command: 'apply'
+                      workingDirectory: '$(Pipeline.Workspace)/terraform-manifests-out'
+                      environmentServiceName: 'terraform-aks-azurerm-svc-con'
+                      commandOptions: '$(Pipeline.Workspace)/terraform-manifests-out/$(DEV_ENVIRONMENT)-$(Build.BuildId).out'
+                      allowTelemetryCollection: false
